@@ -219,7 +219,7 @@ const teamRoles: { id: string; label: string }[] = [
 const roleLabels: Record<string, string> = Object.fromEntries(teamRoles.map((r) => [r.id, r.label]));
 
 async function callTeamAdmin(action: 'create' | 'set_role' | 'toggle_active', payload: Record<string, unknown>) {
-  const { data: session } = await supabase.auth.getSession();
+  const { data: { session } } = await supabase.auth.getSession();
   if (!session?.access_token) throw new Error('You are not signed in.');
   const method = action === 'create' ? 'POST' : 'PATCH';
   const response = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/team-admin`, {
