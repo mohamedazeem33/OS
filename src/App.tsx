@@ -67,29 +67,54 @@ function friendlyError() { return 'Something went wrong. Please try again.'; }
 function statusLabel(status: Lead['status']) { return status === 'follow_up' ? 'Follow-up' : status.charAt(0).toUpperCase() + status.slice(1); }
 function formatReceived(value: string) { return new Intl.DateTimeFormat('en-GB', { day: '2-digit', month: 'short' }).format(new Date(value)); }
 
+type AuthView = 'loading' | 'login' | 'set_password' | 'invite_error' | 'workspace';
+
 function App() {
+  const [view, setView] = useState<AuthView>('loading');
   const [session, setSession] = useState<Awaited<ReturnType<typeof supabase.auth.getSession>>['data']['session']>(null);
-  const [authLoading, setAuthLoading] = useState(true);
   const [profile, setProfile] = useState<Profile | null>(null);
   const [authError, setAuthError] = useState('');
+  const [inviteEmail, setInviteEmail] = useState('');
 
   useEffect(() => {
     let mounted = true;
-    supabase.auth.getSession().then(({ data }) => { if (mounted) { setSession(data.session); setAuthLoading(false); } });
-    const { data: listener } = supabase.auth.onAuthStateChange((_event, nextSession) => setSession(nextSession));
+    supabase.auth.getSession().then(({ data }) => {
+      if (!mounted) return;
+      setSession(data.session);
+      setView(data.session ? 'login' : 'login');
+      // If the URL has an error_description or error from a failed invite flow, surface it.
+      const params = new URLSearchParams(window.location.hash.slice(1));
+      const errCode = params.get('error_code') || new URLSearchParams(window.location.search).get('error_code');
+      if (errCode === '403' || errCode === '422' || errCode === '410') {
+        setView('invite_error');
+      }
+    });
+    const { data: listener } = supabase.auth.onAuthStateChange((event, nextSession) => {
+      if (!mounted) return;
+      setSession(nextSession);
+      if (event === 'PASSWORD_RECOVERY') {
+        setInviteEmail(nextSession?.user?.email ?? '');
+        setView('set_password');
+      } else if (event === 'SIGNED_OUT') {
+        setView('login');
+      }
+    });
     return () => { mounted = false; listener.subscription.unsubscribe(); };
   }, []);
 
   useEffect(() => {
-    if (!session) { setProfile(null); return; }
+    if (view === 'set_password' || view === 'invite_error') return;
+    if (!session) { setProfile(null); setView('login'); return; }
     supabase.from('profiles').select('id, email, full_name, role, is_active').eq('id', session.user.id).maybeSingle().then(({ data, error }) => {
-      if (error || !data || !data.is_active) setAuthError('This account does not have workspace access. Contact your administrator.');
-      else setProfile(data as Profile);
+      if (error || !data || !data.is_active) { setAuthError('This account does not have workspace access. Contact your administrator.'); setView('login'); }
+      else { setProfile(data as Profile); setView('workspace'); }
     });
-  }, [session]);
+  }, [session, view]);
 
-  if (authLoading) return <div className="loading-screen"><div className="loading-mark">T</div><span>Loading workspace</span></div>;
-  if (!session || !profile) return <Login error={authError} onError={setAuthError} />;
+  if (view === 'loading') return <div className="loading-screen"><div className="loading-mark">T</div><span>Loading workspace</span></div>;
+  if (view === 'set_password') return <SetPassword email={inviteEmail} onDone={() => setView('login')} />;
+  if (view === 'invite_error') return <InviteError />;
+  if (view === 'login' || !session || !profile) return <Login error={authError} onError={setAuthError} />;
   return <Workspace profile={profile} />;
 }
 
@@ -116,6 +141,76 @@ function Login({ error, onError }: { error: string; onError: (message: string) =
       {error && <div className="auth-message"><CircleAlert size={16} />{error}</div>}
       <button className="lime-button login-button" disabled={loading}>{loading ? 'Checking access…' : <>Log in <ArrowUpRight size={18} /></>}</button>
     </form>
+    <footer className="login-footer"><span>Taha Media</span><span>01 / Access</span></footer>
+  </main>;
+}
+
+function SetPassword({ email, onDone }: { email: string; onDone: () => void }) {
+  const [password, setPassword] = useState('');
+  const [confirm, setConfirm] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [done, setDone] = useState(false);
+
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    if (password.length < 8) { setError('Password must be at least 8 characters.'); return; }
+    if (password !== confirm) { setError('Passwords do not match.'); return; }
+    setLoading(true); setError('');
+    const { error: updateError } = await supabase.auth.updateUser({ password });
+    setLoading(false);
+    if (updateError) {
+      const msg = updateError.message.toLowerCase();
+      setError(msg.includes('expired') || msg.includes('invalid') || msg.includes('token')
+        ? 'This invitation link has expired or is invalid. Please ask your administrator to send a new invitation.'
+        : updateError.message);
+      return;
+    }
+    setDone(true);
+  };
+
+  if (done) {
+    return <main className="login-page">
+      <header className="login-header"><img src="/taha_logo.png" alt="Taha Media" /><span>Internal access</span></header>
+      <div className="login-rule" />
+      <section className="login-intro"><p className="eyebrow">Taha Media / 01</p><h1>Password set.<br /><em>You're ready.</em></h1><span className="lime-line" /></section>
+      <div className="login-form">
+        <div className="form-heading"><span>All set</span><Check size={18} /></div>
+        <p className="auth-message" style={{ color: 'var(--success, #16a34a)' }}><Check size={16} />Your password has been set. You can now sign in with your email and new password.</p>
+        <button className="lime-button login-button" onClick={onDone}>Continue to sign in <ArrowUpRight size={18} /></button>
+      </div>
+      <footer className="login-footer"><span>Taha Media</span><span>01 / Access</span></footer>
+    </main>;
+  }
+
+  return <main className="login-page">
+    <header className="login-header"><img src="/taha_logo.png" alt="Taha Media" /><span>Internal access</span></header>
+    <div className="login-rule" />
+    <section className="login-intro"><p className="eyebrow">Taha Media / 01</p><h1>Set your<br /><em>password.</em></h1><span className="lime-line" /></section>
+    <form className="login-form" onSubmit={submit}>
+      <div className="form-heading"><span>Create password</span><ShieldCheck size={18} /></div>
+      <p className="auth-message" style={{ color: 'var(--text-muted, #6b7280)' }}><Mail size={16} />{email ? `Welcome, ${email}.` : 'Welcome.'} Choose a password to finish setting up your account.</p>
+      <label>Password<div className="password-field"><input type={showPassword ? 'text' : 'password'} placeholder="At least 8 characters" value={password} onChange={(event) => setPassword(event.target.value)} required minLength={8} /><button type="button" aria-label={showPassword ? 'Hide password' : 'Show password'} onClick={() => setShowPassword(!showPassword)}>{showPassword ? <EyeOff size={19} /> : <Eye size={19} />}</button></div></label>
+      <label>Confirm password<div className="password-field"><input type={showPassword ? 'text' : 'password'} placeholder="Re-enter your password" value={confirm} onChange={(event) => setConfirm(event.target.value)} required /><button type="button" aria-label={showPassword ? 'Hide password' : 'Show password'} onClick={() => setShowPassword(!showPassword)}>{showPassword ? <EyeOff size={19} /> : <Eye size={19} />}</button></div></label>
+      {error && <div className="auth-message"><CircleAlert size={16} />{error}</div>}
+      <button className="lime-button login-button" disabled={loading}>{loading ? 'Saving…' : <>Set password <ArrowUpRight size={18} /></>}</button>
+    </form>
+    <footer className="login-footer"><span>Taha Media</span><span>01 / Access</span></footer>
+  </main>;
+}
+
+function InviteError() {
+  return <main className="login-page">
+    <header className="login-header"><img src="/taha_logo.png" alt="Taha Media" /><span>Internal access</span></header>
+    <div className="login-rule" />
+    <section className="login-intro"><p className="eyebrow">Taha Media / 01</p><h1>Link<br /><em>expired.</em></h1><span className="lime-line" /></section>
+    <div className="login-form">
+      <div className="form-heading"><span>Invalid invitation</span><CircleAlert size={18} /></div>
+      <p className="auth-message"><CircleAlert size={16} />This invitation link has expired or is no longer valid. Invitation links expire after 24 hours for security.</p>
+      <p className="auth-message" style={{ color: 'var(--text-muted, #6b7280)' }}><Mail size={16} />Please ask your workspace administrator to send you a new invitation from the Team management page.</p>
+      <a className="lime-button login-button" href={window.location.origin}>Go to sign in <ArrowUpRight size={18} /></a>
+    </div>
     <footer className="login-footer"><span>Taha Media</span><span>01 / Access</span></footer>
   </main>;
 }

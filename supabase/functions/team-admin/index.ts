@@ -85,8 +85,11 @@ Deno.serve(async (req: Request) => {
       let inviteMethod: "invite" | "temp_password" = "invite";
       let tempPassword: string | null = null;
 
+      const origin = new URL(req.url).origin;
+      const redirectTo = `${origin}/auth/invite`;
       const { error: inviteError } = await supabase.auth.admin.inviteUserByEmail(email, {
         data: { full_name: fullName },
+        options: { redirectTo },
       });
 
       if (inviteError) {
