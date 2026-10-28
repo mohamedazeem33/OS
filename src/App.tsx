@@ -8,11 +8,13 @@ import {
   CircleAlert,
   CirclePlus,
   Clock3,
+  Copy,
   Eye,
   EyeOff,
   Filter,
   LayoutDashboard,
   LogOut,
+  Mail,
   Menu,
   MoreHorizontal,
   Search,
@@ -23,6 +25,7 @@ import {
   Tag,
   Target,
   UserRound,
+  UserPlus,
   UsersRound,
   X,
 } from 'lucide-react';
@@ -158,7 +161,8 @@ function Workspace({ profile }: { profile: Profile }) {
       <header className="topbar"><button className="menu-button" onClick={() => setMobileNav(true)}><Menu size={21} /></button><div className="breadcrumb"><span>Taha Media</span><i>/</i><strong>{navItems.find((item) => item.id === page)?.label}</strong></div><div className="topbar-actions"><span className="date-label"><CalendarDays size={16} /> {new Intl.DateTimeFormat('en-GB', { weekday: 'long', day: 'numeric', month: 'long' }).format(new Date())}</span><button className="icon-button"><Bell size={18} /><i /></button><div className="top-avatar">{profile.full_name.slice(0, 1).toUpperCase()}</div></div></header>
       {page === 'dashboard' && <Dashboard leads={leads} profiles={profiles} onOpenLeads={() => setPage('leads')} onAdd={() => setShowAdd(true)} />}
       {page === 'leads' && <LeadsPage leads={leads} profiles={profiles} loading={loading} error={dataError} onRetry={loadData} onAdd={() => setShowAdd(true)} onSelect={setSelectedLead} />}
-      {['clients', 'finance', 'team', 'settings'].includes(page) && <PlaceholderPage page={page} />}
+      {page === 'team' && <TeamPage profile={profile} />}
+      {['clients', 'finance', 'settings'].includes(page) && <PlaceholderPage page={page} />}
     </main>
     {showAdd && <LeadModal profiles={profiles} onClose={() => setShowAdd(false)} onSave={(form) => saveLead(form)} />}
     {selectedLead && <LeadDetail lead={selectedLead} profiles={profiles} onClose={() => setSelectedLead(null)} onSave={(form) => saveLead(form, selectedLead.id)} />}
@@ -202,6 +206,176 @@ function LeadEditor({ title, profiles, initial, onClose, onSave, detail = false 
   return <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><section className="lead-drawer"><div className="drawer-header"><div><p className="eyebrow">{detail ? 'Lead record' : 'New opportunity'}</p><h2>{title}</h2></div><button className="close-button" onClick={onClose}><X size={20} /></button></div><form className="lead-form" onSubmit={submit}><div className="form-grid"><label>Full name<input value={form.name} onChange={(event) => update('name', event.target.value)} placeholder="e.g. Ahmed Khan" required /></label><label>Phone number<input value={form.phone} onChange={(event) => update('phone', event.target.value)} placeholder="+92 300 0000000" required /></label><label>Email address<input type="email" value={form.email ?? ''} onChange={(event) => update('email', event.target.value)} placeholder="Optional" /></label><label>Interested service<input value={form.service} onChange={(event) => update('service', event.target.value)} placeholder="e.g. Social media management" /></label><label>Lead source<select value={form.source} onChange={(event) => update('source', event.target.value as Lead['source'])}>{sources.slice(1).map((item) => <option key={item}>{item}</option>)}</select></label><label>Assigned salesperson<select value={form.assigned_to ?? ''} onChange={(event) => update('assigned_to', event.target.value || null)}><option value="">Unassigned</option>{profiles.map((person) => <option value={person.id} key={person.id}>{person.full_name}</option>)}</select></label><label>Lead status<select value={form.status} onChange={(event) => update('status', event.target.value as Lead['status'])}>{statuses.map((item) => <option key={item} value={item}>{statusLabel(item)}</option>)}</select></label><label>Follow-up date<input type="date" value={form.follow_up_date ?? ''} onChange={(event) => update('follow_up_date', event.target.value || null)} /></label></div><label className="notes-field">Internal notes<textarea rows={5} value={form.notes} onChange={(event) => update('notes', event.target.value)} placeholder="Add useful context for the team…" /></label>{error && <div className="auth-message"><CircleAlert size={16} />{error}</div>}<div className="drawer-footer"><button type="button" className="outline-button" onClick={onClose}>Cancel</button><button className="lime-button" disabled={saving}>{saving ? 'Saving…' : <>{detail ? 'Save changes' : 'Create lead'} <ArrowUpRight size={17} /></>}</button></div></form></section></div>;
 }
 
-function PlaceholderPage({ page }: { page: Page }) { const labels: Record<string, string> = { clients: 'Clients', finance: 'Finance', team: 'Team', settings: 'Settings' }; return <div className="page-content placeholder-page"><div className="placeholder-mark"><Sparkles size={24} /></div><p className="eyebrow">Phase 1 / Coming next</p><h1>{labels[page]}</h1><p className="subtitle">This space is reserved for the next layer of the Taha Media workspace.</p><span className="lime-line" /></div>; }
+function PlaceholderPage({ page }: { page: Page }) { const labels: Record<string, string> = { clients: 'Clients', finance: 'Finance', settings: 'Settings' }; return <div className="page-content placeholder-page"><div className="placeholder-mark"><Sparkles size={24} /></div><p className="eyebrow">Phase 1 / Coming next</p><h1>{labels[page]}</h1><p className="subtitle">This space is reserved for the next layer of the Taha Media workspace.</p><span className="lime-line" /></div>; }
+
+const teamRoles: { id: string; label: string }[] = [
+  { id: 'sales', label: 'Sales' },
+  { id: 'editor', label: 'Editor' },
+  { id: 'script_writer', label: 'Script Writer' },
+  { id: 'social_media_manager', label: 'Social Media Manager' },
+  { id: 'finance', label: 'Finance' },
+  { id: 'employee', label: 'Employee' },
+];
+const roleLabels: Record<string, string> = Object.fromEntries(teamRoles.map((r) => [r.id, r.label]));
+
+async function callTeamAdmin(action: 'create' | 'set_role' | 'toggle_active', payload: Record<string, unknown>) {
+  const { data: session } = await supabase.auth.getSession();
+  if (!session?.access_token) throw new Error('You are not signed in.');
+  const method = action === 'create' ? 'POST' : 'PATCH';
+  const response = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/team-admin`, {
+    method,
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${session.access_token}`,
+      apikey: import.meta.env.VITE_SUPABASE_ANON_KEY,
+    },
+    body: JSON.stringify(action === 'create' ? payload : { action, ...payload }),
+  });
+  if (!response.ok) {
+    let message = 'Something went wrong.';
+    try { const body = await response.json(); if (body?.error) message = body.error; } catch { /* ignore */ }
+    throw new Error(message);
+  }
+  return (await response.json()) as { method?: 'invite' | 'temp_password'; temp_password?: string };
+}
+
+function TeamPage({ profile }: { profile: Profile }) {
+  const isAdmin = profile.role === 'admin';
+  const [employees, setEmployees] = useState<Profile[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [query, setQuery] = useState('');
+  const [roleFilter, setRoleFilter] = useState('All roles');
+  const [statusFilter, setStatusFilter] = useState('All status');
+  const [showAdd, setShowAdd] = useState(false);
+  const [actionRow, setActionRow] = useState<Profile | null>(null);
+  const [confirmState, setConfirmState] = useState<{ profile: Profile; action: 'set_role' | 'toggle_active'; newRole?: string; newActive?: boolean } | null>(null);
+  const [working, setWorking] = useState(false);
+
+  const loadEmployees = async () => {
+    setLoading(true); setError('');
+    const { data, error: err } = await supabase.from('profiles').select('id, email, full_name, role, is_active').order('full_name');
+    if (err) setError(friendlyError());
+    else setEmployees((data ?? []) as Profile[]);
+    setLoading(false);
+  };
+  useEffect(() => { loadEmployees(); }, []);
+
+  const filtered = useMemo(() => employees.filter((e) =>
+    [e.full_name, e.email, roleLabels[e.role] ?? e.role].join(' ').toLowerCase().includes(query.toLowerCase()) &&
+    (roleFilter === 'All roles' || e.role === roleFilter) &&
+    (statusFilter === 'All status' || (statusFilter === 'Active' ? e.is_active : !e.is_active))),
+    [employees, query, roleFilter, statusFilter]);
+
+  const runAction = async () => {
+    if (!confirmState) return;
+    setWorking(true);
+    try {
+      if (confirmState.action === 'set_role' && confirmState.newRole) {
+        await callTeamAdmin('set_role', { user_id: confirmState.profile.id, role: confirmState.newRole });
+      } else if (confirmState.action === 'toggle_active') {
+        await callTeamAdmin('toggle_active', { user_id: confirmState.profile.id, is_active: confirmState.newActive ?? false });
+      }
+      setConfirmState(null);
+      await loadEmployees();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : friendlyError());
+    } finally {
+      setWorking(false);
+    }
+  };
+
+  return <div className="page-content">
+    <div className="page-title-row leads-title"><div><p className="eyebrow">Team / {employees.length.toString().padStart(2, '0')} members</p><h1>Team management</h1><p className="subtitle">Every workspace member, clearly accounted for.</p></div>{isAdmin && <button className="lime-button" onClick={() => setShowAdd(true)}><UserPlus size={18} /> Add employee</button>}</div>
+    <div className="filter-bar"><div className="search-box"><Search size={18} /><input placeholder="Search team members" value={query} onChange={(e) => setQuery(e.target.value)} /></div><div className="filter-select"><Filter size={16} /><select value={roleFilter} onChange={(e) => setRoleFilter(e.target.value)}><option>All roles</option>{teamRoles.map((r) => <option key={r.id} value={r.id}>{r.label}</option>)}</select></div><div className="filter-select"><select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}><option>All status</option><option>Active</option><option>Inactive</option></select></div></div>
+    {error && <div className="data-state"><CircleAlert size={22} /><h3>Something went wrong</h3><p>{error}</p><button className="outline-button" onClick={() => { setError(''); loadEmployees(); }}>Try again</button></div>}
+    {!error && loading ? <div className="data-state"><div className="spinner" /><p>Loading team members…</p></div>
+     : !error && filtered.length === 0 ? <div className="data-state"><div className="empty-icon"><UsersRound size={22} /></div><h3>No team members found</h3><p>Adjust your search or add a new employee.</p></div>
+     : !error && <div className="lead-table-wrap"><table className="lead-table"><thead><tr><th>Member</th><th>Role</th><th>Status</th><th>Created</th><th /></tr></thead><tbody>
+      {filtered.map((e) => <tr key={e.id}><td><div className="table-person"><div className="small-avatar" style={{ opacity: e.is_active ? 1 : 0.45 }}>{e.full_name.slice(0, 1).toUpperCase()}</div><div><strong>{e.full_name}</strong><span>{e.email}</span></div></div></td>
+        <td><span className={`team-role-pill ${e.role}`}>{e.role === 'admin' ? 'Admin' : roleLabels[e.role] ?? e.role}</span></td>
+        <td><span className={`active-pill ${e.is_active ? 'on' : 'off'}`}><span className="active-dot" />{e.is_active ? 'Active' : 'Inactive'}</span></td>
+        <td><span className="muted">Team member</span></td>
+        <td>{isAdmin && e.role !== 'admin' ? <button className="row-action" aria-label={`Manage ${e.full_name}`} onClick={() => setActionRow(e)}><MoreHorizontal size={18} /></button> : <span className="muted">—</span>}</td>
+      </tr>)}
+    </tbody></table></div>}
+    {showAdd && isAdmin && <AddEmployeeModal onClose={() => setShowAdd(false)} onCreated={async () => { setShowAdd(false); await loadEmployees(); }} />}
+    {actionRow && isAdmin && <EmployeeActionDrawer profile={actionRow} onClose={() => setActionRow(null)} onConfirm={(action, value) => { setActionRow(null); setConfirmState({ profile: actionRow, action, newRole: action === 'set_role' ? value : undefined, newActive: action === 'toggle_active' ? Boolean(value) : undefined }); }} />}
+    {confirmState && <ConfirmDialog state={confirmState} working={working} onCancel={() => setConfirmState(null)} onConfirm={runAction} />}
+  </div>;
+}
+
+function AddEmployeeModal({ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
+  const [fullName, setFullName] = useState('');
+  const [email, setEmail] = useState('');
+  const [role, setRole] = useState(teamRoles[0].id);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+  const [result, setResult] = useState<{ method: string; temp_password?: string } | null>(null);
+  const [copied, setCopied] = useState(false);
+
+  const submit = async (event: FormEvent) => {
+    event.preventDefault(); setSaving(true); setError(''); setResult(null);
+    try {
+      const res = await callTeamAdmin('create', { full_name: fullName, email, role });
+      setResult({ method: res.method ?? 'invite', temp_password: res.temp_password });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : friendlyError());
+    } finally { setSaving(false); }
+  };
+
+  const finish = () => onCreated();
+
+  const copyPassword = () => {
+    if (!result?.temp_password) return;
+    navigator.clipboard.writeText(result.temp_password).then(() => { setCopied(true); setTimeout(() => setCopied(false), 2000); }).catch(() => {});
+  };
+
+  return <div className="modal-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) result ? finish() : onClose(); }}>
+    <section className="lead-drawer"><div className="drawer-header"><div><p className="eyebrow">{result ? 'Employee invited' : 'New team member'}</p><h2>{result ? 'Account created' : 'Add an employee'}</h2></div><button className="close-button" onClick={result ? finish : onClose}><X size={20} /></button></div>
+      {!result ? <form className="lead-form" onSubmit={submit}><p className="team-helper">The employee will receive an email invitation to set their own password and sign in.</p><div className="form-grid">
+        <label>Full name<input value={fullName} onChange={(e) => setFullName(e.target.value)} placeholder="e.g. Sara Ahmed" required /></label>
+        <label>Email address<input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="name@taha.in" required /></label>
+        <label className="form-grid-full">Role<select value={role} onChange={(e) => setRole(e.target.value)}>{teamRoles.map((r) => <option key={r.id} value={r.id}>{r.label}</option>)}</select></label>
+      </div>
+      {error && <div className="auth-message"><CircleAlert size={16} />{error}</div>}
+      <div className="drawer-footer"><button type="button" className="outline-button" onClick={onClose}>Cancel</button><button className="lime-button" disabled={saving}>{saving ? 'Sending invite…' : <>Send invite <ArrowUpRight size={17} /></>}</button></div></form>
+      : <div className="team-result">
+        <div className={`team-result-card ${result.method === 'invite' ? 'ok' : 'warn'}`}>
+          {result.method === 'invite'
+            ? <><Mail size={20} /><div><strong>Invitation sent.</strong><span>{email} will receive an email to set their password and sign in.</span></div></>
+            : <><CircleAlert size={20} /><div><strong>Account created with a temporary password.</strong><span>Email delivery was unavailable. Share this password once — it is not stored.</span></div></>}
+        </div>
+        {result.temp_password && <div className="temp-pass-row"><label>Temporary password</label><div className="temp-pass-box"><code>{result.temp_password}</code><button type="button" onClick={copyPassword} className={copied ? 'copied' : ''}>{copied ? <><Check size={14} /> Copied</> : <><Copy size={14} /> Copy</>}</button></div></div>}
+        <button className="lime-button" onClick={finish}>Done <ArrowUpRight size={17} /></button>
+      </div>}
+    </section>
+  </div>;
+}
+
+function EmployeeActionDrawer({ profile, onClose, onConfirm }: { profile: Profile; onClose: () => void; onConfirm: (action: 'set_role' | 'toggle_active', value: string | boolean) => void }) {
+  const [selectedRole, setSelectedRole] = useState(profile.role);
+  return <div className="modal-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+    <section className="lead-drawer"><div className="drawer-header"><div><p className="eyebrow">Manage member</p><h2>{profile.full_name}</h2></div><button className="close-button" onClick={onClose}><X size={20} /></button></div>
+      <div className="lead-form">
+        <label className="team-email-label">Email<input value={profile.email} readOnly disabled /></label>
+        <label className="form-grid-full team-role-label">Role<select value={selectedRole} onChange={(e) => setSelectedRole(e.target.value)}>{teamRoles.map((r) => <option key={r.id} value={r.id}>{r.label}</option>)}</select></label>
+        <div className="drawer-footer"><button className="outline-button" onClick={onClose}>Cancel</button><button className="lime-button" disabled={selectedRole === profile.role} onClick={() => onConfirm('set_role', selectedRole)}>Save role <ArrowUpRight size={17} /></button></div>
+        <div className="team-divider" />
+        <p className="eyebrow">Access</p>
+        <div className="team-toggle-row"><div><strong>{profile.is_active ? 'Deactivate account' : 'Activate account'}</strong><span>{profile.is_active ? 'Prevent sign-in without deleting the account.' : 'Allow this member to sign in again.'}</span></div><button className="outline-button" onClick={() => onConfirm('toggle_active', !profile.is_active)}>{profile.is_active ? 'Deactivate' : 'Activate'}</button></div>
+      </div>
+    </section>
+  </div>;
+}
+
+function ConfirmDialog({ state, working, onCancel, onConfirm }: { state: { profile: Profile; action: 'set_role' | 'toggle_active'; newRole?: string; newActive?: boolean }; working: boolean; onCancel: () => void; onConfirm: () => void }) {
+  const text = state.action === 'set_role'
+    ? `Change ${state.profile.full_name}'s role to ${roleLabels[state.newRole ?? ''] ?? state.newRole}?`
+    : state.newActive
+      ? `Activate ${state.profile.full_name}'s account?`
+      : `Deactivate ${state.profile.full_name}'s account? They will not be able to sign in.`;
+  return <div className="modal-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) onCancel(); }}><section className="confirm-dialog"><p>{text}</p><div className="drawer-footer"><button className="outline-button" onClick={onCancel} disabled={working}>Cancel</button><button className="lime-button" onClick={onConfirm} disabled={working}>{working ? 'Saving…' : 'Confirm'}</button></div></section></div>;
+}
 
 export default App;
